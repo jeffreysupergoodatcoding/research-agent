@@ -1,0 +1,26 @@
+.env
+*.env.local
+
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Run artifacts
+results/
+out_pulse_jsonl/
+out_fragment_json/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
