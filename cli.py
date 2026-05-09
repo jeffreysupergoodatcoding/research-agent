@@ -212,10 +212,41 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
                 summary.append({"task": src, "status": "error", "error": str(exc)})
 
         elif src.startswith("browser/"):
-            # Phase 2 — live browser scrape. Stub for now.
-            print(f"    SKIPPED — live browser tasks land in Phase 2. Use existing_json with a "
-                  f"pre-scraped result for the same data type.")
-            summary.append({"task": src, "status": "skipped", "reason": "phase_2"})
+            kind = src.split("/", 1)[1]
+            ts0 = datetime.now(timezone.utc)
+            try:
+                if kind == "reddit":
+                    from sources import browser_reddit
+                    print(f"    Running live Reddit scrape (8-13 min wall time, ~$0.30-1.00)")
+                    ra_output = browser_reddit.run(
+                        subreddits=task.get("subreddits", []),
+                        queries=task.get("queries", []),
+                        max_threads=int(task.get("max_threads", 1)),
+                    )
+                else:
+                    print(f"    ERROR: unsupported browser kind {kind!r} (not yet wired)")
+                    summary.append({"task": src, "status": "error", "error": f"browser/{kind} not wired"})
+                    continue
+
+                records = convert(ra_output, entity_id=entity_id)
+                ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                jsonl = out_dir / f"{kind}_live_{ts}.jsonl"
+                write_jsonl(records, jsonl)
+                upload_result = api.upload_jsonl(entity_id, str(jsonl))
+                elapsed = (datetime.now(timezone.utc) - ts0).total_seconds()
+                print(f"    converted {len(records)} records, uploaded "
+                      f"added={upload_result.get('records_added')} "
+                      f"skipped={upload_result.get('records_skipped')} "
+                      f"(elapsed {elapsed:.0f}s)")
+                summary.append({"task": src, "status": "completed",
+                                "added": upload_result.get("records_added"),
+                                "skipped": upload_result.get("records_skipped"),
+                                "elapsed_s": elapsed})
+            except Exception as exc:
+                import traceback
+                print(f"    ERROR: {exc}")
+                traceback.print_exc()
+                summary.append({"task": src, "status": "error", "error": str(exc)})
 
         else:
             print(f"    ERROR: unknown source kind {src!r}")
