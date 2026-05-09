@@ -1,0 +1,65 @@
+# Playper — Research Agent client config
+# Loaded by: cli.py with --client playper
+# Defaults for tasks; can be overridden per-CLI-invocation.
+
+name: playper
+description: Sustainable buildable paperboard playsets for kids 3-7
+
+# Where to land copies of this client's results so downstream consumers
+# (Fragment Labs sims, Pulse uploads, manual review) can pick them up.
+mirror_to:
+  - ~/Desktop/fragment/Playper/research_agent_results
+
+# Default per-task inputs --------------------------------------------------
+
+reddit:
+  subreddits:
+    - Preschoolers
+    - toddlers
+    - homeschool
+    - ECEProfessionals
+    - toys
+  queries:
+    - "best toys for 4 year old"
+    - "best toys for 3 year old"
+    - "sustainable toys"
+    - "screen-free play"
+    - "best stem toys for kids"
+  max_threads: 1   # per (subreddit, query) pair
+
+amazon:
+  search_terms:
+    - "melissa and doug castle"
+    - "buildable paper toy for kids"
+    - "magna-tiles starter set"
+    - "wooden castle playset"
+    - "kiwico crate toys"
+  asins: []   # add Playper's own + competitor ASINs if known
+  max_listings: 1
+
+trends:
+  keywords:
+    - "Bluey toys"
+    - "Paw Patrol toys"
+    - "Magna-Tiles"
+    - "KiwiCo"
+    - "Lovevery"
+    - "sustainable toys"
+    - "wooden toys"
+    - "Curious Kingdom"
+  timeframe: "Past 5 years"
+  geo: "US"
+
+tiktok:
+  hashtags:
+    - sustainabletoys
+    - screenfreeplay
+    - montessoritoys
+    - papertoys
+  queries: []
+  max_posts: 10
+  # NOTE: TikTok currently login-walled. See 04 Tasks Status / 05 Known Issues.
+
+# Pulse integration --------------------------------------------------------
+pulse:
+  entity_id: ""   # fill if uploading this client's data into a specific Pulse entity

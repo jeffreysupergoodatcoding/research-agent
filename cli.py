@@ -124,6 +124,51 @@ def cmd_push_to_pulse(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_uplink(args: argparse.Namespace) -> int:
+    """Mirror latest results/*.json (and optional .raw.md) to a client's mirror_to dirs.
+
+    Usage:
+        python cli.py uplink --client playper [--all] [--results-dir ./results]
+    """
+    from clients.loader import load
+    import shutil
+    cfg = load(args.client)
+    targets = [Path(t).expanduser() for t in cfg.get("mirror_to", [])]
+    if not targets:
+        print(f"[uplink] No mirror_to targets in clients/{args.client}.yaml")
+        return 0
+
+    results_dir = Path(args.results_dir)
+    if not results_dir.exists():
+        print(f"[uplink] results dir not found: {results_dir}")
+        return 2
+
+    # Pick latest of each task-type unless --all
+    files = sorted(results_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not args.all:
+        latest_by_prefix: dict[str, Path] = {}
+        for f in files:
+            prefix = f.name.split("_")[0]  # reddit / amazon / trends / tiktok
+            latest_by_prefix.setdefault(prefix, f)
+        files = list(latest_by_prefix.values())
+
+    if not files:
+        print(f"[uplink] no JSON files in {results_dir}")
+        return 0
+
+    for tgt in targets:
+        tgt.mkdir(parents=True, exist_ok=True)
+        for f in files:
+            dest = tgt / f.name
+            shutil.copy2(f, dest)
+            # Also copy a sibling .raw.md if it exists
+            raw = f.with_name(f.name.replace(".json", ".raw.md"))
+            if raw.exists():
+                shutil.copy2(raw, tgt / raw.name)
+        print(f"[uplink] {args.client}: copied {len(files)} file(s) → {tgt}")
+    return 0
+
+
 def cmd_orchestrate(args: argparse.Namespace) -> int:
     """Execute a multi-source plan: mix Pulse-API pulls with browser-scraped or
     cached JSON sources, all into a single Pulse entity.
@@ -286,6 +331,16 @@ def main() -> int:
     orch.add_argument("--pulse-url", default="http://localhost:5001")
     orch.add_argument("--out-dir", default="./out_pulse_jsonl")
     orch.set_defaults(func=cmd_orchestrate)
+
+    uplink = sub.add_parser(
+        "uplink",
+        help="Mirror latest results/*.json into a client's mirror_to directories.",
+    )
+    uplink.add_argument("--client", required=True, help="Client name (e.g. 'playper')")
+    uplink.add_argument("--results-dir", default="./results", help="Source results dir")
+    uplink.add_argument("--all", action="store_true",
+                        help="Copy every file, not just the latest per task type")
+    uplink.set_defaults(func=cmd_uplink)
 
     args = p.parse_args()
     return args.func(args)
