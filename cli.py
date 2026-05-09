@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import Optional
 
 from adapters.to_pulse import convert, write_jsonl
+from sources.pulse_api import PulseAPI
+from sources import existing_json
 
 
 def _post_multipart(url: str, fields: dict, file_path: Path, file_field: str = "file",
@@ -122,6 +124,109 @@ def cmd_push_to_pulse(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_orchestrate(args: argparse.Namespace) -> int:
+    """Execute a multi-source plan: mix Pulse-API pulls with browser-scraped or
+    cached JSON sources, all into a single Pulse entity.
+
+    Plan file shape (JSON):
+      {
+        "entity_id": "<pulse uuid>",      // optional if --entity-id passed
+        "tasks": [
+          {"source": "pulse_api/hackernews", "ids": ["AnthropicAI"], "limit": 100},
+          {"source": "pulse_api/auto",        "extra_terms": ["claude"], "limit": 200},
+          {"source": "existing_json", "path": "/abs/path/to/reddit_*.json"}
+        ]
+      }
+    """
+    plan_path = Path(args.plan).expanduser().resolve()
+    if not plan_path.exists():
+        print(f"ERROR: plan file not found: {plan_path}", file=sys.stderr)
+        return 2
+
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    entity_id = args.entity_id or plan.get("entity_id")
+    if not entity_id:
+        print("ERROR: --entity-id required (or 'entity_id' field in plan)", file=sys.stderr)
+        return 3
+
+    api = PulseAPI(args.pulse_url)
+
+    out_dir = Path(args.out_dir).expanduser().resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    summary: list[dict] = []
+    for i, task in enumerate(plan.get("tasks", []), 1):
+        src = task.get("source", "")
+        print(f"\n  [Task {i}/{len(plan['tasks'])}] {src}")
+
+        if src.startswith("pulse_api/"):
+            kind = src.split("/", 1)[1]
+            ts0 = datetime.now(timezone.utc)
+            try:
+                if kind == "auto":
+                    task_id = api.auto_pull(
+                        entity_id,
+                        limit=int(task.get("limit", 200)),
+                        extra_terms=task.get("extra_terms"),
+                    )
+                else:
+                    sources = [{"platform": kind, "ids": task.get("ids", [])}]
+                    task_id = api.pull(
+                        entity_id,
+                        sources=sources,
+                        limit=int(task.get("limit", 200)),
+                    )
+                print(f"    Pulse task started: {task_id}")
+                result = api.wait_for_task(task_id, timeout=int(task.get("timeout", 600)))
+                pulled = result.get("records_pulled", 0)
+                new = result.get("records_new", 0)
+                print(f"    Pulse status: {result.get('status')} — pulled={pulled} new={new}")
+                summary.append({"task": src, "status": result.get("status"),
+                                "pulled": pulled, "new": new,
+                                "elapsed_s": (datetime.now(timezone.utc) - ts0).total_seconds()})
+            except Exception as exc:
+                print(f"    ERROR: {exc}")
+                summary.append({"task": src, "status": "error", "error": str(exc)})
+
+        elif src == "existing_json":
+            path = task.get("path")
+            if not path:
+                print("    ERROR: existing_json task needs 'path'")
+                summary.append({"task": src, "status": "error", "error": "missing path"})
+                continue
+            try:
+                ra_output = existing_json.load(path)
+                records = convert(ra_output, entity_id=entity_id)
+                ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                jsonl = out_dir / f"{Path(path).stem}_to_pulse_{ts}.jsonl"
+                write_jsonl(records, jsonl)
+                upload_result = api.upload_jsonl(entity_id, str(jsonl))
+                print(f"    converted {len(records)} records, uploaded "
+                      f"added={upload_result.get('records_added')} "
+                      f"skipped={upload_result.get('records_skipped')}")
+                summary.append({"task": src, "status": "completed",
+                                "added": upload_result.get("records_added"),
+                                "skipped": upload_result.get("records_skipped")})
+            except Exception as exc:
+                print(f"    ERROR: {exc}")
+                summary.append({"task": src, "status": "error", "error": str(exc)})
+
+        elif src.startswith("browser/"):
+            # Phase 2 — live browser scrape. Stub for now.
+            print(f"    SKIPPED — live browser tasks land in Phase 2. Use existing_json with a "
+                  f"pre-scraped result for the same data type.")
+            summary.append({"task": src, "status": "skipped", "reason": "phase_2"})
+
+        else:
+            print(f"    ERROR: unknown source kind {src!r}")
+            summary.append({"task": src, "status": "error", "error": f"unknown source {src}"})
+
+    print("\n  ━━━ Orchestration summary ━━━")
+    for s in summary:
+        print(f"    {s}")
+    return 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="Research Agent CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -139,6 +244,17 @@ def main() -> int:
     push.add_argument("--dry-run", action="store_true",
                       help="Convert + write JSONL but skip the upload")
     push.set_defaults(func=cmd_push_to_pulse)
+
+    orch = sub.add_parser(
+        "orchestrate",
+        help="Execute a multi-source plan (Pulse-API + cached/browser sources) into one Pulse entity.",
+    )
+    orch.add_argument("--plan", required=True, help="Path to a JSON plan file")
+    orch.add_argument("--entity-id", default="",
+                      help="Target Pulse entity UUID (overrides plan.entity_id)")
+    orch.add_argument("--pulse-url", default="http://localhost:5001")
+    orch.add_argument("--out-dir", default="./out_pulse_jsonl")
+    orch.set_defaults(func=cmd_orchestrate)
 
     args = p.parse_args()
     return args.func(args)
